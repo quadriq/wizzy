@@ -14,7 +14,7 @@ Logger.prototype.showResult = function(resultLine) {
 };
 
 Logger.prototype.showError = function(errorLine) {
-	console.error('\u2718 '.red + errorLine.cyan);
+	console.error('\u2718 '.red + errorLine);
 };
 
 Logger.prototype.showOutput = function(output) {
