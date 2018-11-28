@@ -190,24 +190,64 @@ ExportSrv.prototype.dashboards = function(grafanaURL, options) {
       process.exit(1);
     }
 
-    // Getting existing list of dashboards and making a mapping of names to ids
+    // Getting existing list of dashboards and folders and making a mapping of names to ids
     var dashSlugs = {};
+    var folderSlugs = {};
     _.forEach(body, function(dashboard) {
+      //Removing "db/" from the uri
       if (dashboard.type === 'dash-db') {
-        //Removing "db/" from the uri
         dashSlugs[dashboard.uri.substring(3)] = dashboard.id;
+      } else if (dashboard.type === 'dash-folder') {
+        folderSlugs[dashboard.uri.substring(3)] = dashboard.uid;
       }
     });
 
     var folderList = components.getDashboardFolders('dashboards');
     _.forEach(folderList, function(folder) {
-      var dashList = components.readEntityNamesFromDir('dashboards/' + folder);
-      logger.justShow('Exporting ' + dashList.length + 'dashboards/' + folder);
-
       var headers = options.headers || {};
       if (options.auth.bearer) {
         headers.Authorization = 'Bearer ' + options.auth.bearer;
       }
+      var method = 'POST';
+      var url = createURL(grafanaURL, 'folders');
+      var folderId = 0;
+      url = sanitizeUrl(url, options.auth);
+      var body = {
+        title: folder
+      };
+      if (folder.toLowerCase() in folderSlugs) {
+        method = 'PUT';
+        url = url + '/' + folderSlugs[folder.toLowerCase()];
+        body.overwrite = true;
+      } 
+      // Use sync-request to avoid table lockdown
+      try {
+        var returnBody = {};
+        var response = syncReq(method, url, {
+          json: body,
+          headers: headers
+        });
+        try {
+          logger.showOutput(response.getBody('utf8'));
+          returnBody = JSON.parse(response.getBody('utf8'));
+        } catch (error) {
+          logger.showOutput(response.body.toString('utf8'));
+        }
+        if (response.statusCode !== 200) {
+          logger.showError('Folder ' + folder + ' export failed.');
+          failed++;
+        } else {
+          folderId = returnBody.id;
+          logger.showResult('Folder ' + folder + ' exported successfully with Id: ' + folderId );
+          success++;
+        }
+      } catch (error) {
+        logger.showError('Folder ' + folder + ' export failed: ' + error);
+        failed++;
+      }
+
+      var dashList = components.readEntityNamesFromDir('dashboards/' + folder);
+      logger.justShow('Exporting ' + dashList.length + ' dashboards in ' + folder + ':');
 
       // Here we try exporting (either updating or creating) a dashboard
       _.forEach(dashList, function(dashboard) {
@@ -215,6 +255,7 @@ ExportSrv.prototype.dashboards = function(grafanaURL, options) {
         url = sanitizeUrl(url, options.auth);
         var body = {
           dashboard: components.dashboards.readDashboard(dashboard, folder),
+          folderId: folderId
         };
         // Updating an existing dashboard
         if (dashboard in dashSlugs) {
@@ -233,7 +274,10 @@ ExportSrv.prototype.dashboards = function(grafanaURL, options) {
           } catch (error) {
             logger.showOutput(response.body.toString('utf8'));
           }
-          if (response.statusCode !== 200) {
+          if (response.statusCode === 400) {
+            logger.showError('Dashboard ' + dashboard + ' already exists.');
+            failed++;
+          } else if (response.statusCode !== 200) {
             logger.showError('Dashboard ' + dashboard + ' export failed.');
             failed++;
           } else {
@@ -252,7 +296,6 @@ ExportSrv.prototype.dashboards = function(grafanaURL, options) {
 
       if (failed > 0) {
         logger.showError(failed + ' dashboards export failed.');
-        process.exit(1);
       }
     });
 
@@ -478,6 +521,8 @@ function createURL(grafanaURL, entityType, entityValue) {
     grafanaURL += '/api/alert-notifications/' + entityValue;
   } else if (entityType === 'alerts') {
     grafanaURL += '/api/alert-notifications';
+  } else if (entityType === 'folders') {
+    grafanaURL += '/api/folders';
   }
 
   return grafanaURL;
